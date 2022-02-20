@@ -1,8 +1,13 @@
+import logging
 import sys
+from pathlib import Path
 
-from proto.analysis_pb2 import CqueryResult
+logger = logging.getLogger('ABP')
+logger.setLevel(logging.DEBUG)
+
 from bazel.cc import gen_android_bp_files
 from bazel.parse import parse_cquery_result
+from proto.analysis_pb2 import CqueryResult
 
 
 def main(argv):
@@ -15,7 +20,7 @@ def main(argv):
         data = sys.stdin.buffer.read()
     message.ParseFromString(data)
     parse_cquery_result(message)
-    gen_android_bp_files('.')
+    gen_android_bp_files(Path.cwd())
     print('done')
 
 

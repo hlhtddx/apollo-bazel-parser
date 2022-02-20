@@ -2,19 +2,20 @@ import re
 
 
 def get_attr_boolean_value(key, attributes, default_value):
-    if key in attributes:
+    if attributes and key in attributes:
         return attributes[key].boolean_value
     return default_value
 
 
 def get_attr_string_value(key, attributes, default_value):
-    if key in attributes:
+    if attributes and key in attributes:
         return attributes[key].string_value
     return default_value
 
 
 def get_attr_string_list_value(key, attributes, default_value):
-    if key in attributes:
+
+    if attributes and key in attributes:
         return list(attributes[key].string_list_value)
     return default_value
 

@@ -1,9 +1,10 @@
-from .cc import parse_cc_rule
+from .cc import parse_cc_rule, post_parse_cc_rules
 
 
 def parse_cquery_result(message):
     for target in message.results:
         parse_target(target)
+    post_parse_cc_rules()
 
 
 def parse_target(message):

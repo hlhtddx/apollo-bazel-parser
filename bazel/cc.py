@@ -1,15 +1,26 @@
+import logging
 import re
 from pathlib import Path
-from typing import Set, List, Dict
+from typing import Set, Dict, List
 
 from bazel import get_attr_boolean_value, get_attr_string_value, get_attr_string_list_value
 from bazel import normalize_location, normalize_name
 
+logger = logging.getLogger('ABP')
+
 
 class CcModule(object):
-    def __init__(self, name: str, rule_class: str, location: str, attributes: dict):
-        self.name = normalize_name(name)
-        self.path = normalize_location(location)
+    def __init__(self, name: str, rule_class: str, location: str or None, attributes: dict or None,
+                 normal_name: str or None = None):
+        self.name = name
+        if normal_name:
+            self.normal_name = normal_name
+        else:
+            self.normal_name = normalize_name(name)
+        if location:
+            self.path = normalize_location(location)
+        else:
+            self.path = None
         self.rule_class = rule_class
 
         self.srcs = get_attr_string_list_value('srcs', attributes, [])
@@ -44,7 +55,7 @@ class CcModule(object):
         self.required = []
 
         if self.path:
-            print(self)
+            logger.debug(self)
 
     def __str__(self):
         return '\n'.join([
@@ -68,21 +79,24 @@ class CcModule(object):
         ])
 
     def _post_init(self):
-        srcs = []
-        for i in self.srcs:
-            src_name = self._normalize_src_path(i)
-            if src_name.endswith('.c') or src_name.endswith('.cc') or src_name.endswith('.cxx'):
-                srcs.append(src_name)
-        self.srcs = srcs
+        normal_srcs = []
+        if self.srcs:
+            for i in self.srcs:
+                src_name = self._normalize_src_path(i)
+                if src_name.endswith('.c') or src_name.endswith('.cc') or src_name.endswith('.cxx'):
+                    normal_srcs.append(src_name)
+            self.normal_srcs = normal_srcs
 
         # alternate rule_class for android
-        if not self.srcs:  # No source file defined, maybe a phony module
-            if self.hdrs:
-                self.rule_class = 'cc_library_headers'
-            else:
-                self.rule_class = 'cc_defaults'
+        if self.rule_class == 'cc_binary' and self.linkshared == True:
+            self.rule_class = 'cc_library_shared'
         elif self.rule_class == 'cc_library':
-            if self.linkshared:
+            if not self.srcs:  # No source file defined, maybe a phony module
+                if self.hdrs:
+                    self.rule_class = 'cc_library_headers'
+                elif not self.deps:
+                    self.rule_class = 'cc_defaults'
+            elif self.linkshared:
                 self.rule_class = 'cc_library_shared'
             else:
                 self.rule_class = 'cc_library_static'
@@ -90,6 +104,61 @@ class CcModule(object):
             self.rule_class = 'cc_library'
 
     SRC_PATTERN = re.compile(r'/(/(\w+))+:(.+)')
+
+    def post_parse_process(self):
+        for dep in self.deps:
+            if dep not in cc_rules_by_name:
+                # TODO add thirdparty library support
+                logger.error('Cannot find deps %s', dep)
+                continue
+            module = cc_rules_by_name[dep]
+            if module.rule_class == 'cc_library_shared':
+                logger.debug('Add cc_library_shared %s for %s', self.name, module.name)
+                self.shared_libs.append(module)
+            elif module.rule_class == 'cc_library_static':
+                logger.debug('Add cc_library_static %s for %s', self.name, module.name)
+                self.static_libs.append(module)
+            elif module.rule_class == 'cc_library_headers':
+                logger.debug('Add cc_library_headers %s for %s', self.name, module.name)
+                self.header_libs.append(module)
+            elif module.rule_class == 'cc_defaults':
+                logger.debug('Add cc_defaults %s for %s', self.name, module.name)
+                self.defaults.append(module)
+            else:
+                logger.debug('Add required %s for %s', self.name, module.name)
+                self.required.append(module)
+
+    def output_to_android_bp(self, bp_file):
+        # Skip BUILD outside
+        if not self.path:
+            return
+        if self.rule_class == 'cc_library_headers':
+            return
+
+        bp_file.write(f'\n{self.rule_class} {{\n')
+        # name
+        bp_file.write(f'    /* bazel name: "{self.name}" */\n')
+        bp_file.write(f'    name: "{self.normal_name}",\n')
+        if self.rule_class in ('cc_binary', 'cc_library_shared'):
+            bp_file.write(f'    vendor: true,\n')
+
+        # output srcs
+        if self.srcs:
+            bp_file.write(f'    srcs: [\n')
+            for i in self.normal_srcs:
+                bp_file.write(f'        "{self.path}/{i}",\n')
+            bp_file.write(f'    ],\n')
+
+        output_dependencies(bp_file=bp_file, dependencies=self.shared_libs, label='shared_libs')
+        output_dependencies(bp_file=bp_file, dependencies=self.static_libs, label='static_libs')
+        output_dependencies(bp_file=bp_file, dependencies=self.defaults, label='defaults')
+        output_dependencies(bp_file=bp_file, dependencies=self.required, label='required')
+        output_dependencies(bp_file=bp_file, dependencies=self.includes, label='includes')
+
+        if self.defines:
+            pass
+
+        bp_file.write('}\n')
 
     @staticmethod
     def _normalize_src_path(src_file_path: str):
@@ -100,109 +169,55 @@ class CcModule(object):
 
     @staticmethod
     def _populate_lib_path(lib_path):
-        new_path = normalize_name(lib_path)
-
-        # change protobuf to android cpp libname
-        if new_path == 'protobuf':
-            new_path = 'libproto-cpp-full'
-        return new_path
-
-    def output_to_android_bp(self, bp_file):
-        # Skip BUILD outside
-        if not self.path:
-            return
-        if self.rule_class == 'cc_library_headers':
-            return
-
-        bp_file.write(f'\n{self.rule_class} {{\n')
-        bp_file.write(f'    name: "{self.name}",\n')
-        bp_file.write(f'    vendor: true,\n')
-
-        # output srcs
-        if self.srcs:
-            bp_file.write(f'    srcs: [\n')
-            for i in self.srcs:
-                bp_file.write(f'        "{self.path}/{self._normalize_src_path(i)}",\n')
-            bp_file.write(f'    ],\n')
-
-        # output libs
-        if self.shared_libs:
-            bp_file.write(f'    shared_libs: [\n')
-            for i in self.shared_libs:
-                bp_file.write(f'        "{self._populate_lib_path(i)}",\n')
-            bp_file.write(f'    ],\n')
-
-        if self.static_libs:
-            bp_file.write(f'    static_libs: [\n')
-            for i in self.static_libs:
-                bp_file.write(f'        "{self._populate_lib_path(i)}",\n')
-            bp_file.write(f'    ],\n')
-
-        if self.defaults:
-            bp_file.write(f'    defaults: [\n')
-            for i in self.defaults:
-                bp_file.write(f'        "{self._populate_lib_path(i)}",\n')
-            bp_file.write(f'    ],\n')
-
-        if self.required:
-            bp_file.write(f'    required: [\n')
-            for i in self.required:
-                bp_file.write(f'        "{self._populate_lib_path(i)}",\n')
-            bp_file.write(f'    ],\n')
-
-        if self.includes:
-            bp_file.write(f'    includes: [\n')
-            for i in self.includes:
-                bp_file.write(f'        "{i}",\n')
-            bp_file.write(f'    ],\n')
-
-        if self.defines:
-            pass
-
-        bp_file.write('}\n')
-
-    def post_parse_process(self):
-        for dep in self.deps:
-            module = cc_rules_by_name[dep]
-            if module.rule_class == 'cc_library_shared':
-                self.shared_libs.append(module)
-            elif module.rule_class == 'cc_library_static':
-                self.static_libs.append(module)
-            elif module.rule_class == 'cc_library_headers':
-                self.header_libs.append(module)
-            elif module.rule_class == 'cc_defaults':
-                self.defaults.append(module)
-            else:
-                self.required.append(module)
+        return lib_path
 
 
 cc_rules_by_name: Dict[str, CcModule] = {}
-cc_rules_by_path: Dict[str, Set[CcModule]] = {}
 
 
-def gen_android_bp_files(base_dir: str):
-    bp_file_path = Path.joinpath(Path(base_dir), 'Android.bp')
-    with open(bp_file_path, 'w') as bp_file:
+def output_dependencies(bp_file, dependencies: List[CcModule], label: str):
+    if dependencies:
+        bp_file.write(f'    {label}: [\n')
+        for i in dependencies:
+            bp_file.write(f'        /* {i.name} */\n')
+            bp_file.write(f'        "{i.normal_name}",\n')
+        bp_file.write(f'    ],\n')
+
+
+def gen_android_bp_files(base_dir: Path):
+    bp_file_path = Path.joinpath(base_dir, 'Android.bp')
+    with open(bp_file_path, mode='w+') as bp_file:
         bp_file.write('/* Auto-generated by bazel BUILD file */\n')
-        for filepath, modules in cc_rules_by_path.items():
-            if not filepath:
+        for module in cc_rules_by_name.values():
+            if not module.path:
                 continue
-            gen_android_bp_file(bp_file, modules)
+            module.output_to_android_bp(bp_file)
 
 
-def gen_android_bp_file(bp_file, modules: Set[CcModule]):
-    for module in modules:
-        module.output_to_android_bp(bp_file)
-
-
-def parse_cc_rule(name, rule_class, location, attributes):
-    module = CcModule(name, rule_class, location, attributes)
+def parse_cc_rule(name, rule_class, location=None, attributes=None, normal_name=None):
+    if name.startswith('@'):
+        return
+    module = CcModule(name, rule_class, location, attributes, normal_name)
     cc_rules_by_name[module.name] = module
-    if module.path not in cc_rules_by_path:
-        cc_rules_by_path[module.path] = set()
-    cc_rules_by_path[module.path].add(module)
 
 
 def post_parse_cc_rules():
     for name, rule in cc_rules_by_name.items():
         rule.post_parse_process()
+
+
+third_party_libs = {
+    '@com_google_protobuf//:protobuf': 'libprotobuf-cpp-full',
+    '@fastrtps//:fastrtps': 'fastrtps',
+    '@fastcdr//:fastcdr': 'fastcdr',
+    '@local_config_python//:python_headers': 'python_headers',
+    '@local_config_python//:python_lib': 'python_lib',
+    '@ncurses5//:ncurses5': 'ncurses5',
+    '@com_github_google_glog//:glog': 'glog',
+    '@com_github_gflags_gflags//:gflags': 'gflags',
+    '@uuid//:uuid': 'uuid',
+}
+
+for bazel_name, android_name in third_party_libs.items():
+    module = CcModule(bazel_name, 'cc_library_static', location=None, attributes=None, normal_name=android_name)
+    cc_rules_by_name[bazel_name] = module
