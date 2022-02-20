@@ -12,7 +12,7 @@ def main(argv):
         with open(argv[1], 'rb') as f:
             data = f.read()
     else:
-        data = sys.stdin.read()
+        data = sys.stdin.buffer.read()
     message.ParseFromString(data)
     parse_cquery_result(message)
     gen_android_bp_files('.')
