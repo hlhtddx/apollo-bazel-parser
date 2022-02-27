@@ -1,22 +1,12 @@
 import re
 
 
-def get_attr_boolean_value(key, attributes, default_value):
-    if attributes and key in attributes:
-        return attributes[key].boolean_value
-    return default_value
-
-
-def get_attr_string_value(key, attributes, default_value):
-    if attributes and key in attributes:
-        return attributes[key].string_value
-    return default_value
-
-
-def get_attr_string_list_value(key, attributes, default_value):
-
-    if attributes and key in attributes:
-        return list(attributes[key].string_list_value)
+def get_attr_value(key, attributes, value_type, default_value=None):
+    if not attributes or key not in attributes:
+        return default_value
+    attrib = attributes[key]
+    if attrib['explicitlySpecified']:
+        return attrib[value_type]
     return default_value
 
 
