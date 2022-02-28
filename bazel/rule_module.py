@@ -115,6 +115,11 @@ class CcModule(RuleModule):
             else:
                 self.module_class = 'cc_library_static'
 
+        self.deps.append('@com_github_gflags_gflags//:gflags')
+        self.deps.append('@com_github_google_glog//:glog')
+        self.deps.append('@fastrtps//:fastrtps')
+        self.deps.append('@fastcdr//:fastcdr')
+        self.deps.append('libcyber-proto')
         # check header exports
         if self.hdrs:
             for hdr in self.hdrs:
@@ -155,6 +160,11 @@ class CcModule(RuleModule):
         bp_file.write(f'    name: "{self.normal_name}",\n')
         #        if self.rule_class in ('cc_binary', 'cc_library_shared'):
         bp_file.write(f'    vendor: true,\n')
+        bp_file.write(f'    rtti: true,\n')
+        bp_file.write('''    cppflags: [
+        "-fexceptions",
+        "-Wno-non-virtual-dtor",
+    ],\n''')
 
         def filter_source_file(item):
             src_name = self._normalize_src_path(item)
@@ -163,10 +173,10 @@ class CcModule(RuleModule):
             return None
 
         self.output_items(bp_file=bp_file, items=self.srcs, label='srcs', filter_func=filter_source_file)
-        self.output_items(bp_file=bp_file, items=self.export_include_dirs, label='export_include_dirs')
+        # self.output_items(bp_file=bp_file, items=self.export_include_dirs, label='export_include_dirs')
 
         self.output_modules(bp_file=bp_file, items=self.shared_libs, label='shared_libs')
-        self.output_modules(bp_file=bp_file, items=self.static_libs, label='static_libs')
+        self.output_modules(bp_file=bp_file, items=self.static_libs, label='whole_static_libs')
         self.output_modules(bp_file=bp_file, items=self.header_libs, label='header_libs')
 
         if self.defines:
