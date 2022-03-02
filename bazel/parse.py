@@ -27,6 +27,11 @@ class Modules:
     def load_cquery_result(self, message):
         for target in message["results"]:
             self.load_target(target)
+        module_cyber = CcModule('libcyber', '/apollo/cyber/BUILD:7:11', 'cc_library', [])
+        module_cyber.linkshared = True
+        module_cyber.for_output = True
+        self.modules['libcyber'] = module_cyber
+
         self.post_load()
         self.parse()
 
